@@ -10,13 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-# Make 'fold' importable as a package
-BASE_DIR = Path(__file__).resolve().parent
-PARENT_DIR = BASE_DIR.parent
-sys.path.insert(0, str(PARENT_DIR))
-
-from fold.utils.seqio import normalize_input_sequences, ensure_dir
-from fold.utils.retrieval import run_remote
+from utils.seqio import normalize_input_sequences, ensure_dir
+from utils.retrieval import run_remote
 
 
 @dataclass

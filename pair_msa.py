@@ -2,7 +2,7 @@
 """
 Standalone species-based pairing tool for multimer MSAs.
 
-Given per-chain pairing-candidate A3M files (e.g., fold_msa.py produced
+Given per-chain pairing-candidate A3M files (e.g., query_msa.py produced
 `msa/<i>/pairing.a3m` for each chain), this script:
   1) parses headers to extract species IDs (UniRef100_*_<taxid>/ pattern),
   2) computes per-entry similarity to the chain query,
