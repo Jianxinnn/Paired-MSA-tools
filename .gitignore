@@ -1,0 +1,5 @@
+__pycache__
+*.pyc
+msa_job
+test_searched_msa
+tmp
