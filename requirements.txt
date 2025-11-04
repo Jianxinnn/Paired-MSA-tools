@@ -1,2 +1,4 @@
 requests>=2.28
 tqdm>=4.65
+numpy>=1.20
+matplotlib>=3.5

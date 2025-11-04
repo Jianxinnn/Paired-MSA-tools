@@ -12,6 +12,7 @@ from typing import List, Optional, Sequence
 
 from utils.seqio import normalize_input_sequences, ensure_dir
 from utils.retrieval import run_remote
+from utils import stitch as stitch_utils
 
 
 @dataclass
@@ -39,6 +40,7 @@ def run_single_job(
     user_agent: str,
     two_step: bool = False,
     sleep_between_steps: float = 3.0,
+    genomic_distance: Optional[int] = None,
 ) -> List[str]:
     server = server.lower()
     out_dir = ensure_dir(out_dir)
@@ -80,6 +82,7 @@ def run_single_job(
             email=email,
             auth_user=auth_user,
             auth_pass=auth_pass,
+            genomic_distance=genomic_distance,
         )
         return [str(Path(out_dir) / "msa" / str(i)) for i in range(len(seqs))]
 
@@ -94,6 +97,7 @@ def run_single_job(
         email=email,
         auth_user=auth_user,
         auth_pass=auth_pass,
+        genomic_distance=genomic_distance,
     )
 
 
@@ -165,7 +169,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--out_dir", type=str, required=True, help="Output directory (single) or root (batch)")
     p.add_argument("--server", choices=["protenix", "colabfold"], default="protenix")
-    p.add_argument("--pairing", choices=["off", "greedy", "complete"], default="greedy")
+    p.add_argument("--pairing", choices=["off", "greedy", "complete"], default="complete")
     p.add_argument("--host_url", default=None)
     p.add_argument("--auth_user", default=None)
     p.add_argument("--auth_pass", default=None)
@@ -173,6 +177,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--user_agent", default="paired-msa-tools/0.1")
     # ColabFold helper
     p.add_argument("--two_step", action="store_true", help="For ColabFold multimers: run per-chain non-pairing then complex pairing")
+    # Notebook-style stitched output & filters
+    p.add_argument("--stitch_out", default=None, help="Write a single stitched A3M like the notebook (combined chains)")
+    p.add_argument("--min_coverage", type=float, default=0.75)
+    p.add_argument("--min_identity", type=float, default=0.15)
+    p.add_argument("--max_evalue", type=float, default=None)
+    p.add_argument("--min_alnscore", type=float, default=None)
+    p.add_argument("--genomic_distance", type=int, default=1, help="ColabFold pair filter: pairfilterprox_Δgene; ignored for Protenix")
     # Batch-only
     p.add_argument("--delimiter", default=",", help="Batch input delimiter (',' or '\t')")
     p.add_argument("--min_interval_s", type=float, default=5.0)
@@ -212,10 +223,89 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         email=args.email,
         user_agent=args.user_agent,
         two_step=args.two_step,
+        genomic_distance=args.genomic_distance,
     )
     print("MSA directories:")
     for d in out_dirs:
         print(d)
+
+    # Optional: produce notebook-style stitched A3M
+    if args.stitch_out is not None:
+        raw_dir = Path(args.out_dir) / "raw"
+        stitched_path = Path(args.stitch_out)
+        entries: List[dict] = []
+        # Priority: if ColabFold pair results exist, use pair.a3m; else for ColabFold mono/non-pairing use env+uniref; else for Protenix, synthesize from pairing.a3m across chains
+        pair_a3m = raw_dir / "pair.a3m"
+        if pair_a3m.exists():
+            entries = stitch_utils.parse_paired_a3m(str(pair_a3m))
+        else:
+            if args.server == "colabfold":
+                # try single MSAs (env+uniref)
+                entries = stitch_utils.parse_single_msas(str(raw_dir))
+            else:
+                # Fallback: build from per-chain pairing.a3m by simple index pairing
+                # Concatenate rows across chains by index to emulate stitched view
+                # Read per-chain pairing.a3m in order
+                per_chain = []
+                for i in range(len(seqs)):
+                    a3m_path = Path(args.out_dir) / "msa" / str(i) / "pairing.a3m"
+                    if a3m_path.exists():
+                        with open(a3m_path, 'r') as f:
+                            per_chain.append(f.read().splitlines())
+                if per_chain:
+                    # Parse each chain using parse_msa_lines, then zip by index (min length)
+                    parsed = [stitch_utils.parse_msa_lines(lines) for lines in per_chain]
+                    k = min(len(p) for p in parsed)
+                    for r in range(k):
+                        headers, sequences, covs, ids, evs, als, uids, upnums = [], [], [], [], [], [], [], []
+                        has_uniref = True
+                        for c in range(len(parsed)):
+                            e = parsed[c][r]
+                            headers.append(e['header'])
+                            sequences.append(e['sequence'])
+                            covs.append(e['coverage'])
+                            ids.append(e['identity'])
+                            evs.append(e['evalue'])
+                            als.append(e['alnscore'])
+                            uids.append(e['uid'])
+                            upnums.append(e['uniprot_num'])
+                            has_uniref = has_uniref and e['has_uniref']
+                        entries.append({
+                            'headers': headers,
+                            'sequences': sequences,
+                            'coverages': covs,
+                            'identities': ids,
+                            'evalues': evs,
+                            'alnscores': als,
+                            'uids': uids,
+                            'uniprot_nums': upnums,
+                            'has_uniref': has_uniref,
+                            'is_query': (r == 0),
+                        })
+
+        if not entries:
+            print("[stitch] No entries found to stitch; skip.")
+            return 0
+
+        # Save with filters
+        n, filtered = stitch_utils.save_stitched(
+            entries,
+            str(stitched_path),
+            min_coverage=args.min_coverage,
+            min_identity=args.min_identity,
+            max_evalue=args.max_evalue,
+            min_alnscore=args.min_alnscore,
+            max_genomic_distance=args.genomic_distance if args.server == "colabfold" else None,
+        )
+        print(f"[stitch] wrote {n} sequences to {stitched_path}")
+        # Show stats before/after when filters are set
+        if any(v is not None for v in [args.min_coverage, args.min_identity, args.max_evalue, args.min_alnscore, args.genomic_distance]):
+            stats_before = stitch_utils.get_stats(entries)
+            stats_after = stitch_utils.get_stats(filtered)
+            print("[stitch] === Statistics BEFORE filtering ===")
+            print(stats_before)
+            print("[stitch] === Statistics AFTER filtering ===")
+            print(stats_after)
     return 0
 
 

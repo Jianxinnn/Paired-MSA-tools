@@ -28,6 +28,7 @@ def run_remote(
     email: str,
     auth_user: Optional[str],
     auth_pass: Optional[str],
+    genomic_distance: Optional[int] = None,
 ) -> List[str]:
     server = server.lower()
     if host_url is None:
@@ -57,7 +58,11 @@ def run_remote(
     else:
         if want_pair and len(seqs) > 1:
             endpoint = "ticket/pair"
-            mode = "pairgreedy" if pairing == "greedy" else "paircomplete"
+            # Support ColabFold genomic proximity filter in pair-complete mode
+            if server == "colabfold" and pairing == "complete" and genomic_distance is not None:
+                mode = f"paircomplete-pairfilterprox_{int(genomic_distance)}"
+            else:
+                mode = "pairgreedy" if pairing == "greedy" else "paircomplete"
         else:
             endpoint = "ticket/msa"
             mode = "env"
